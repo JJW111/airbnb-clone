@@ -1,0 +1,4 @@
+{
+  "python.pythonPath": "C:\\Users\\jjw\\.virtualenvs\\clone-airbnb-EsTunQ51\\Scripts\\python.exe",
+  "python.linting.pylintArgs": ["--load-plugins=pylint_django"]
+}
