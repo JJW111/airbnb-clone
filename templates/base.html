@@ -4,11 +4,22 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-UA-Compatible" content="ie=edge">
-    <title>{% block page_name %}{% endblock page_name %}</title>
+    <title>{% block page_title %}{% endblock page_title %}</title>
 </head>
 <body>
-
-    {% include "partials/header.html" %}
+    <hearder>
+        {% include "partials/nav.html" %}
+    </header>
+    {% block search-bar %}
+        <form method="get" action="{% url 'rooms:search' %}">
+        <input
+            value="{{ city }}"
+            name="city"
+            type="text"
+            placeholder="Search by City"
+        />
+        </form>
+    {% endblock search-bar %}
 
     {% block content %}{% endblock content %}
 
