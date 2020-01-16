@@ -1,13 +1,16 @@
 import os
 import requests
-from django.views.generic import FormView
+from django.contrib.auth.views import PasswordChangeView
+from django.views.generic import FormView, DetailView, UpdateView
 from django.urls import reverse_lazy
 from django.shortcuts import render, redirect, reverse
 from django.contrib.auth import authenticate, login, logout
-from . import forms, models
+from django.contrib import messages
+from django.contrib.messages.views import SuccessMessageMixin
+from . import forms, models, mixins
 
 
-class Loginview(FormView):
+class Loginview(mixins.LoggedOutOnlyView, FormView):
 
     template_name = "users/login.html"
     form_class = forms.LoginForm
@@ -23,28 +26,25 @@ class Loginview(FormView):
 
 
 def log_out(request):
+    messages.info(request, f"See you later {request.user.first_name}")
     logout(request)
     return redirect(reverse("core:home"))
 
 
-class SignUpView(FormView):
+class SignUpView(mixins.LoggedOutOnlyView, FormView):
 
     template_name = "users/signup.html"
     form_class = forms.SignUpForm
     success_url = reverse_lazy("core:home")
-    initial = {
-        'first_name': "Nicolas",
-        'last_name': "Serr",
-    }
 
     def form_valid(self, form):
+        form.save()
         email = form.cleaned_data.get("email")
         password = form.cleaned_data.get("password")
         user = authenticate(self.request, username=email, password=password)
         if user is not None:
             login(self.request, user)
         user.verify_email()
-        form.save()
         return super().form_valid(form)
 
 
@@ -85,7 +85,7 @@ def github_callback(request):
             token_json = token_request.json()
             error = token_json.get("error", None)
             if error is not None:
-                raise GithubException()
+                raise GithubException("Can't get authorization code.")
             else:
                 access_token = token_json.get("access_token")
                 profile_request = requests.get(
@@ -96,41 +96,36 @@ def github_callback(request):
                     },
                 )
                 profile_json = profile_request.json()
-                username = profile_json.get('login', None)
-                if username is not None:
-                    name = profile_json.get('name')
-                    email = profile_json.get('email')
-                    bio = profile_json.get('bio')
+                name = profile_json.get('name')
+                email = profile_json.get('email')
+                bio = profile_json.get('bio')
 
-                    if email is not None:
-                        try:
-                            user = models.User.objects.get(email=email)
-                            if user.login_method != models.User.LOGIN_GITHUB:
-                                raise GithubException()
-                        except models.User.DoesNotExist:
-                            user = models.User.objects.create(
-                                email=email,
-                                first_name=name,
-                                username=email,
-                                bio=bio,
-                                email_verified=True,
-                                login_method=models.User.LOGIN_GITHUB
-                            )
-                        login(request, user)
-                        return redirect(reverse("core:home"))
-                    else:
-                        return redirect(reverse("users:github-fail"))
+                if email is not None:
+                    try:
+                        user = models.User.objects.get(email=email)
+                        if user.login_method != models.User.LOGIN_GITHUB:
+                            raise GithubException(
+                                f"Please log in with: {user.login_method}")
+                    except models.User.DoesNotExist:
+                        user = models.User.objects.create(
+                            email=email,
+                            first_name=name,
+                            username=email,
+                            bio=bio,
+                            email_verified=True,
+                            login_method=models.User.LOGIN_GITHUB
+                        )
+                    messages.success(
+                        request, f"Welcome back {user.first_name}")
+                    login(request, user)
+                    return redirect(reverse("core:home"))
                 else:
-                    raise GithubException()
+                    raise GithubException("Please also give me your email")
         else:
             raise GithubException()
-    except GithubException:
-        # send error message
+    except GithubException as e:
+        messages.error(request, e)
         return redirect(reverse("users:login"))
-
-
-def github_fail(request):
-    return render(request, "users/github_login_fail.html")
 
 
 def kakao_login(request):
@@ -156,7 +151,7 @@ def kakao_callback(request):
         token_json = token_request.json()
         error = token_json.get("error", None)
         if error is not None:
-            raise KakaoException()
+            raise KakaoException("Can't get authorization code.")
         access_token = token_json.get("access_token")
         profile_request = requests.get(
             "https://kapi.kakao.com/v2/user/me",
@@ -168,13 +163,14 @@ def kakao_callback(request):
         kakao_account = profile_json.get("kakao_account")
         email = kakao_account.get("email", None)
         if email is None:
-            raise KakaoException()
+            raise KakaoException("Please also give me your email")
         properties = profile_json.get("properties")
         nickname = properties.get("nickname")
         try:
             user = models.User.objects.get(email=email)
             if user.login_method != models.User.LOGIN_KAKAO:
-                raise KakaoException()
+                raise KakaoException(
+                    f"Please log in with: {user.login_method}")
         except models.User.DoesNotExist:
             user = models.User.objects.create(
                 email=email,
@@ -183,12 +179,65 @@ def kakao_callback(request):
                 email_verified=True,
                 login_method=models.User.LOGIN_KAKAO,
             )
+        messages.success(request, f"Welcome back {user.first_name}")
         login(request, user)
         return redirect(reverse("core:home"))
-    except KakaoException:
-        # send error message
+    except KakaoException as e:
+        messages.error(request, e)
         return redirect(reverse("users:login"))
 
 
-def kakao_fail(request):
-    return render(request, "users/kakao_login_fail.html")
+class UserProfileView(DetailView):
+
+    model = models.User
+    context_object_name = 'user_obj'
+
+
+class UpdateProfileView(SuccessMessageMixin, UpdateView):
+
+    model = models.User
+    template_name = "users/update-profile.html"
+    fields = (
+        "first_name",
+        "last_name",
+        "gender",
+        "bio",
+        "birthdate",
+        "language",
+        "currency",
+    )
+    success_message = "Profile Updated"
+
+    def get_object(self, queryset=None):
+        return self.request.user
+
+    def get_form(self, form_class=None):
+        form = super().get_form(form_class=form_class)
+        form.fields['first_name'].widget.attrs = {
+            'placeholder': 'First Name'}
+        form.fields['last_name'].widget.attrs = {
+            'placeholder': 'Last Name'}
+        form.fields['bio'].widget.attrs = {
+            'placeholder': 'Comment Bio'}
+        form.fields['birthdate'].widget.attrs = {
+            'placeholder': '2000-01-01'}
+        return form
+
+
+class UpdatePasswordView(SuccessMessageMixin, PasswordChangeView):
+
+    template_name = "users/update-password.html"
+    success_message = "Password Updated"
+
+    def get_form(self, form_class=None):
+        form = super().get_form(form_class=form_class)
+        form.fields['old_password'].widget.attrs = {
+            'placeholder': 'Old Password'}
+        form.fields['new_password1'].widget.attrs = {
+            'placeholder': 'New Password'}
+        form.fields['new_password2'].widget.attrs = {
+            'placeholder': 'Confirm Password'}
+        return form
+
+    def get_success_url(self):
+        return self.request.user.get_absolute_url()
